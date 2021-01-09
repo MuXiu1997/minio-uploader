@@ -3,12 +3,8 @@ package uploader
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"os"
+	"minio-uploader/internal/transformer"
 	"path"
-	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -43,94 +39,68 @@ func NewUploader(v *viper.Viper, minioClient *minio.Client) (*Uploader, error) {
 	}, nil
 }
 
-func (u Uploader) Upload(folder, filePath string) (string, error) {
-	objectName, isTemp, err := u.buildObjectName(folder, &filePath)
-	if isTemp {
-		defer func() {
-			_ = os.Remove(filePath)
-		}()
+func (u Uploader) Upload(folder string, files []string) ([]string, error) {
+	filesCount := len(files)
+	successCount := 0
+
+	results := make([]string, filesCount)
+	resultChan := make(chan struct {
+		Index     int
+		ReturnUrl string
+	})
+	errChan := make(chan error)
+
+	for i, file := range files {
+		go func(i int, file string) {
+			t := transformer.Factory(file)
+			result, err := t.Transform()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			objectName := u.buildObjectName(folder, result)
+			_, err = u.minioClient.PutObject(
+				context.Background(),
+				u.bucket, objectName,
+				result.Buffer,
+				-1,
+				minio.PutObjectOptions{},
+			)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			returnUrl := u.buildReturnUrl(objectName)
+			resultChan <- struct {
+				Index     int
+				ReturnUrl string
+			}{Index: i, ReturnUrl: returnUrl}
+		}(i, file)
 	}
 
-	if err != nil {
-		return "", err
+	for {
+		select {
+		case err := <-errChan:
+			return nil, err
+		case result := <-resultChan:
+			results[result.Index] = result.ReturnUrl
+			successCount++
+			if successCount == filesCount {
+				return results, nil
+			}
+		}
 	}
-
-	_, err = u.minioClient.FPutObject(context.Background(), u.bucket, objectName, filePath, minio.PutObjectOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	return u.buildReturnUrl(objectName), nil
 }
 
-func (u Uploader) checkLocal(filePath *string) (filename string, isLocal bool, err error) {
-	if strings.HasPrefix(*filePath, "http://") || strings.HasPrefix(*filePath, "https://") {
-		fileUrl := *filePath
-		filename, err = httpFilename(fileUrl)
-		if err != nil {
-			return "", false, err
-		}
-		tempFilePath, err := downloadFile(fileUrl)
-		if err != nil {
-			return "", false, err
-		}
-		*filePath = tempFilePath
-		return filename, false, nil
-	}
-	return "", true, nil
-}
-
-func (u Uploader) buildObjectName(folder string, filePath *string) (objectName string, isTemp bool, err error) {
-	filename, isLocal, err := u.checkLocal(filePath)
-	if err != nil {
-		return "", false, err
-	}
-	if isLocal {
-		filename = filepath.Base(*filePath)
-	}
-
-	fileExt := filepath.Ext(filename)
-	filename = filename[:len(filename)-len(fileExt)]
-
+func (u Uploader) buildObjectName(folder string, result *transformer.Result) string {
+	filename := result.Filename
 	if u.useUUID {
 		filename = uuid.Must(uuid.NewRandom()).String()
 	}
-
-	return path.Join(folder, filename+fileExt), !isLocal, nil
+	objectName := path.Join(folder, filename+result.FileExt)
+	return objectName
 }
 
 func (u Uploader) buildReturnUrl(objectName string) string {
 	return strings.Replace(u.returnUrlTemplate, "{objectName}", objectName, -1)
-}
-
-func httpFilename(url string) (string, error) {
-	reg, _ := regexp.Compile(`http[s]?://.*/([^/]*)`)
-	subMatch := reg.FindStringSubmatch(url)
-	if len(subMatch) < 2 {
-		return "", fmt.Errorf("can not get file name")
-	}
-	return subMatch[1], nil
-}
-
-func downloadFile(url string) (string, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	file, err := ioutil.TempFile("", "minio-uploader-temp-")
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-	_, err = file.Write(body)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Abs(file.Name())
 }

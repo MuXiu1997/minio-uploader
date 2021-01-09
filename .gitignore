@@ -4,5 +4,5 @@
 out
 gen
 
-# Out
-/minio-uploader*
+# Output
+/output

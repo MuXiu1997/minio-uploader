@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"minio-uploader/internal/minioclient"
 	"minio-uploader/internal/uploader"
 
@@ -21,29 +22,25 @@ var cmdUpload = &cobra.Command{
 	DisableFlagsInUseLine: true,
 	Aliases:               []string{"up"},
 	Short:                 "Upload images",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		v := viper.GetViper()
 		folder := v.GetString("folder")
 
 		minioClient, err := minioclient.NewMinioClient(v)
 		if err != nil {
-			return err
+			log.Fatalln(err)
 		}
 		uploader, err := uploader.NewUploader(v, minioClient)
 		if err != nil {
-			return err
+			log.Fatalln(err)
 		}
-
-		files := args
-		for _, file := range files {
-			returnUrl, e := uploader.Upload(folder, file)
-			if e != nil {
-				return e
-			}
-			fmt.Println(returnUrl)
+		results, err := uploader.Upload(folder, args)
+		if err != nil {
+			log.Fatalln(err)
 		}
-
-		return nil
+		for _, result := range results {
+			fmt.Println(result)
+		}
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		BindFlags(cmd)

@@ -3,6 +3,7 @@ module minio-uploader
 go 1.15
 
 require (
+	github.com/flytam/filenamify v1.0.0
 	github.com/go-ini/ini v1.62.0 // indirect
 	github.com/google/uuid v1.1.1
 	github.com/minio/minio-go v6.0.14+incompatible
